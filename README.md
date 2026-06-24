@@ -39,6 +39,12 @@ Set `PAPERLOOM_CORS_ORIGINS` to a comma-separated list of allowed frontend origi
 PAPERLOOM_CORS_ORIGINS=https://paperloom.example.com paperloom-api
 ```
 
+By default, the API protects its process from images over 120 million source pixels and exports over 180 million rendered pixels. For a trusted, high-memory server, set either value to `0` to remove that pixel limit:
+
+```bash
+PAPERLOOM_MAX_SOURCE_PIXELS=0 PAPERLOOM_MAX_OUTPUT_PIXELS=0 paperloom-api
+```
+
 The endpoint limits a request to 40 files, 25 MB per file, and 120 MB total. Adjust these deployment-level limits at a reverse proxy if needed.
 
 ## Desktop app (optional)

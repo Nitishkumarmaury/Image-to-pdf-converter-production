@@ -13,7 +13,14 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 
-from .converter import ConversionError, PdfOptions, SUPPORTED_EXTENSIONS, convert_images_to_pdf
+from .converter import (
+    DEFAULT_MAX_SOURCE_PIXELS,
+    DEFAULT_MAX_TOTAL_OUTPUT_PIXELS,
+    ConversionError,
+    PdfOptions,
+    SUPPORTED_EXTENSIONS,
+    convert_images_to_pdf,
+)
 
 MAX_FILES = 40
 MAX_FILE_BYTES = 25 * 1024 * 1024
@@ -27,6 +34,24 @@ def _cors_origins() -> list[str]:
         "http://localhost:3000,http://127.0.0.1:3000",
     )
     return [origin.strip() for origin in configured.split(",") if origin.strip()]
+
+
+def _pixel_limit(environment_name: str, default: int) -> int | None:
+    """Read an optional server-side pixel limit; zero explicitly disables it."""
+    configured = os.environ.get(environment_name)
+    if configured is None:
+        return default
+    try:
+        parsed = int(configured)
+    except ValueError as exc:
+        raise RuntimeError(f"{environment_name} must be a whole number or 0.") from exc
+    if parsed < 0:
+        raise RuntimeError(f"{environment_name} cannot be negative.")
+    return None if parsed == 0 else parsed
+
+
+MAX_SOURCE_PIXELS = _pixel_limit("PAPERLOOM_MAX_SOURCE_PIXELS", DEFAULT_MAX_SOURCE_PIXELS)
+MAX_OUTPUT_PIXELS = _pixel_limit("PAPERLOOM_MAX_OUTPUT_PIXELS", DEFAULT_MAX_TOTAL_OUTPUT_PIXELS)
 
 
 app = FastAPI(
@@ -83,7 +108,14 @@ async def convert(
 
         output_path = temporary_directory / "paperloom.pdf"
         try:
-            await asyncio.to_thread(convert_images_to_pdf, uploaded_paths, output_path, options)
+            await asyncio.to_thread(
+                convert_images_to_pdf,
+                uploaded_paths,
+                output_path,
+                options,
+                max_source_pixels=MAX_SOURCE_PIXELS,
+                max_total_output_pixels=MAX_OUTPUT_PIXELS,
+            )
         except ConversionError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 

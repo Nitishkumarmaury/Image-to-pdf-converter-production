@@ -17,8 +17,8 @@ _PAPER_POINTS = {
     "A4": (595.276, 841.890),
     "Letter": (612.0, 792.0),
 }
-_MAX_SOURCE_PIXELS = 120_000_000
-_MAX_TOTAL_OUTPUT_PIXELS = 180_000_000
+DEFAULT_MAX_SOURCE_PIXELS = 120_000_000
+DEFAULT_MAX_TOTAL_OUTPUT_PIXELS = 180_000_000
 _LANCZOS = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
 
 
@@ -53,13 +53,15 @@ def is_supported_image(path: str | Path) -> bool:
     return Path(path).suffix.lower() in SUPPORTED_EXTENSIONS
 
 
-def image_info(path: str | Path) -> tuple[int, int]:
+def image_info(
+    path: str | Path,
+    max_source_pixels: int | None = DEFAULT_MAX_SOURCE_PIXELS,
+) -> tuple[int, int]:
     """Return display-corrected image dimensions without retaining the image in memory."""
     source = Path(path)
     try:
         with Image.open(source) as image:
-            if image.width * image.height > _MAX_SOURCE_PIXELS:
-                raise ConversionError(f"{source.name} exceeds the safe { _MAX_SOURCE_PIXELS:, } pixel limit.")
+            _check_source_pixel_limit(source, image.size, max_source_pixels)
             corrected = ImageOps.exif_transpose(image)
             return corrected.size
     except (OSError, UnidentifiedImageError) as exc:
@@ -71,6 +73,8 @@ def convert_images_to_pdf(
     output_path: str | Path,
     options: PdfOptions | None = None,
     progress: ProgressCallback | None = None,
+    max_source_pixels: int | None = DEFAULT_MAX_SOURCE_PIXELS,
+    max_total_output_pixels: int | None = DEFAULT_MAX_TOTAL_OUTPUT_PIXELS,
 ) -> Path:
     """Convert ordered image paths to one PDF, atomically replacing the final file.
 
@@ -91,7 +95,7 @@ def convert_images_to_pdf(
     except OSError as exc:
         raise ConversionError(f"Could not create output folder '{destination.parent}'.") from exc
 
-    _check_output_memory_budget(paths, settings)
+    _check_output_memory_budget(paths, settings, max_source_pixels, max_total_output_pixels)
 
     pages: list[Image.Image] = []
     temp_name: str | None = None
@@ -101,7 +105,7 @@ def convert_images_to_pdf(
                 raise ConversionError(f"Image not found: {source}")
             if not is_supported_image(source):
                 raise ConversionError(f"Unsupported image type: {source.name}")
-            page = _prepare_page(source, settings)
+            page = _prepare_page(source, settings, max_source_pixels)
             pages.append(page)
             if progress:
                 progress(index, len(paths), source)
@@ -137,10 +141,9 @@ def convert_images_to_pdf(
                 pass
 
 
-def _prepare_page(source: Path, options: PdfOptions) -> Image.Image:
+def _prepare_page(source: Path, options: PdfOptions, max_source_pixels: int | None) -> Image.Image:
     with Image.open(source) as opened:
-        if opened.width * opened.height > _MAX_SOURCE_PIXELS:
-            raise ConversionError(f"{source.name} exceeds the safe { _MAX_SOURCE_PIXELS:, } pixel limit.")
+        _check_source_pixel_limit(source, opened.size, max_source_pixels)
         normalized = ImageOps.exif_transpose(opened)
         normalized.load()
         image = _flatten_to_rgb(normalized)
@@ -166,18 +169,30 @@ def _prepare_page(source: Path, options: PdfOptions) -> Image.Image:
     return page
 
 
-def _check_output_memory_budget(paths: list[Path], options: PdfOptions) -> None:
+def _check_source_pixel_limit(source: Path, size: tuple[int, int], max_source_pixels: int | None) -> None:
+    if max_source_pixels is not None and size[0] * size[1] > max_source_pixels:
+        raise ConversionError(f"{source.name} exceeds the configured {max_source_pixels:,} source-pixel limit.")
+
+
+def _check_output_memory_budget(
+    paths: list[Path],
+    options: PdfOptions,
+    max_source_pixels: int | None,
+    max_total_output_pixels: int | None,
+) -> None:
     """Reject exports that would make Pillow retain an unsafe number of pixels in RAM."""
     if options.paper_size == "Original":
-        estimated_pixels = sum(width * height for width, height in (image_info(path) for path in paths))
+        estimated_pixels = sum(
+            width * height for width, height in (image_info(path, max_source_pixels) for path in paths)
+        )
     else:
         width_pt, height_pt = _PAPER_POINTS[options.paper_size]
         page_pixels = round(width_pt / 72 * options.dpi) * round(height_pt / 72 * options.dpi)
         estimated_pixels = page_pixels * len(paths)
-    if estimated_pixels > _MAX_TOTAL_OUTPUT_PIXELS:
+    if max_total_output_pixels is not None and estimated_pixels > max_total_output_pixels:
         raise ConversionError(
-            "This export would require too much memory for a reliable conversion. "
-            "Use fewer images, reduce the DPI, or split it into separate PDFs."
+            "This export exceeds the configured output-pixel limit. "
+            "Ask the server administrator to raise PAPERLOOM_MAX_OUTPUT_PIXELS."
         )
 
 
